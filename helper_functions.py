@@ -5,29 +5,27 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from sentence_transformers import SentenceTransformer
 import os
 
-def getVideoRecords(response: requests.models.Response) -> list:
+def get_video_records(response: requests.models.Response) -> list:
     """
-        Function to extract YouTube video data from GET request response
+    Function to extract YouTube video data from GET request response
 
-        Dependers: 
-            - getVideoIDs()
+    Dependencies: 
+        - get_video_ids()
     """
-
     video_record_list = []
-    
-    for raw_item in json.loads(response.text)['items']:
-    
-        # only execute for youtube videos
-        if raw_item['id']['kind'] != "youtube#video":
-            continue
-        
-        video_record = {}
-        video_record['video_id'] = raw_item['id']['videoId']
-        video_record['datetime'] = raw_item['snippet']['publishedAt']
-        video_record['title'] = raw_item['snippet']['title']
-        
-        video_record_list.append(video_record)
-
+    try:
+        items = json.loads(response.text).get('items', [])
+        for raw_item in items:
+            if raw_item['id']['kind'] != "youtube#video":
+                continue
+            video_record = {
+                'video_id': raw_item['id']['videoId'],
+                'datetime': raw_item['snippet']['publishedAt'],
+                'title': raw_item['snippet']['title']
+            }
+            video_record_list.append(video_record)
+    except Exception as e:
+        logging.error(f"Error extracting video records: {e}")
     return video_record_list
 
 
@@ -40,7 +38,7 @@ def getVideoIDs():
     """
 
 
-    channel_id = 'UCa9gErQ9AE5jT2DZLjXBIdA' # my YouTube channel ID
+    channel_id = 'UCBEIhXZovVGC6QWGWvjILuA' # my YouTube channel ID
     page_token = None # initialize page token
     url = 'https://www.googleapis.com/youtube/v3/search' # YouTube search API endpoint
     my_key = os.getenv('YT_API_KEY')
@@ -58,12 +56,12 @@ def getVideoIDs():
         try:
             # grab next page token
             page_token = json.loads(response.text)['nextPageToken']
-        except:
+        except Exception:
             # if no next page token kill while loop
             page_token = 0
 
-    # write videos ids as parquet file
-    pl.DataFrame(video_record_list).write_parquet('data/video-ids.parquet')
+    # write videos ids as csv file
+    pl.DataFrame(video_record_list).write_csv('data/video-ids.csv')
 
 
 def extractTranscriptText(transcript: list) -> str:
@@ -80,14 +78,14 @@ def extractTranscriptText(transcript: list) -> str:
 
 def getVideoTranscripts():
     """
-        Function to extract transcripts for all video IDs stored in "data/video-ids.parquet"
+        Function to extract transcripts for all video IDs stored in "data/video-ids.csv"
 
         Dependencies:
             - extractTranscriptText()
     """
 
 
-    df = pl.read_parquet('data/video-ids.parquet')
+    df = pl.read_csv('data/video-ids.csv')
 
     transcript_text_list = []
 
@@ -97,17 +95,16 @@ def getVideoTranscripts():
         try:
             transcript = YouTubeTranscriptApi.get_transcript(df['video_id'][i])
             transcript_text = extractTranscriptText(transcript)
-        # if not available set as n/a
-        except:
+        except Exception:
             transcript_text = "n/a"
-        
+
         transcript_text_list.append(transcript_text)
 
     # add transcripts to dataframe
     df = df.with_columns(pl.Series(name="transcript", values=transcript_text_list))
 
     # write dataframe to file
-    df.write_parquet('data/video-transcripts.parquet')
+    df.write_csv('data/video-transcripts.csv')
 
 
 def handleSpecialStrings(df: pl.dataframe.frame.DataFrame) -> pl.dataframe.frame.DataFrame:
@@ -150,12 +147,12 @@ def transformData():
             - setDatatypes()
     """
 
-    df = pl.read_parquet('data/video-transcripts.parquet')
+    df = pl.read_csv('data/video-transcripts.csv')
 
     df = handleSpecialStrings(df)
     df = setDatatypes(df)
 
-    df.write_parquet('data/video-transcripts.parquet')
+    df.write_csv('data/video-transcripts.csv')
 
 def createTextEmbeddings():
     """
@@ -163,7 +160,7 @@ def createTextEmbeddings():
     """
 
     # read data from file
-    df = pl.read_parquet('data/video-transcripts.parquet')
+    df = pl.read_csv('data/video-transcripts.csv')
 
     # define embedding model and columns to embed
     # model_path = 'data/all-MiniLM-L6-v2'
@@ -177,11 +174,14 @@ def createTextEmbeddings():
         embedding_arr = model.encode(df[column_name].to_list())
 
         # store embeddings in a dataframe
-        schema_dict = {column_name+'_embedding-'+str(i): float for i in range(embedding_arr.shape[1])}
+        schema_dict = {
+            f'{column_name}_embedding-{str(i)}': float
+            for i in range(embedding_arr.shape[1])
+        }
         df_embedding = pl.DataFrame(embedding_arr, schema=schema_dict)
 
         # append embeddings to video index
         df = pl.concat([df, df_embedding], how='horizontal')
 
     # write data to file
-    df.write_parquet('data/video-index.parquet')
+    df.write_csv('data/video-index.csv')
